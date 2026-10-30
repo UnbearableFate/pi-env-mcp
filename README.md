@@ -47,6 +47,10 @@ their output, pid and exit status under `~/.local/state/pi-env-mcp/jobs/<hostnam
 | `terminal_close` | Close a terminal |
 | `upload` / `download` | Copy files or directory trees between this machine and a host, like `scp -r`: new files appear only once complete; existing files are overwritten in place, keeping their permissions and links |
 
+Relative remote paths, in every tool, resolve against the host's working directory: the configured `cwd` (else the
+remote home), until a `cd` in `bash` moves it for later calls. `hosts` shows the current one, and `upload` and
+`download` name the absolute remote path they copied to or from.
+
 Terminal output runs through a headless terminal emulator (xterm.js), so the agent reads what a person would see, not
 escape sequences. Every tool takes an optional `host`; it defaults to the only configured host, or `defaultHost`.
 

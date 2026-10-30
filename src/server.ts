@@ -166,6 +166,9 @@ export function createServer(options: ServerOptions): { server: McpServer; termi
 		"Use bash for commands; bash with run_in_background, then job_status and job_kill, for long-running work (jobs keep running if the connection drops); terminal_open, terminal_send, terminal_read and terminal_close for interactive programs and shell state; read, write, edit, glob and grep for files; upload and download to copy between this machine and a host.",
 	].join("\n");
 
+	const remoteNote =
+		"Relative remote paths resolve against the host's working directory: the configured cwd (else the remote home), until a `cd` in bash moves it for later calls; hosts shows the current one.";
+
 	const server = new McpServer({ name: "pi-env-mcp", title: "Remote hosts over SSH (pi-env)", version: VERSION }, { instructions });
 
 	const host = z.string().optional().describe(`Remote host to use: ${hostList}.`);
@@ -289,7 +292,7 @@ export function createServer(options: ServerOptions): { server: McpServer; termi
 		{
 			title: "Read a remote file",
 			description:
-				"Read a text file or an image on a remote host. Text comes back with line numbers (cat -n format), up to 2000 lines from the start by default; use offset and limit for other parts of long files. Lines longer than 2000 characters are cut. PNG, JPEG, GIF and WebP files come back as images. Relative paths resolve against the host's working directory.",
+				"Read a text file or an image on a remote host. Text comes back with line numbers (cat -n format), up to 2000 lines from the start by default; use offset and limit for other parts of long files. Lines longer than 2000 characters are cut. PNG, JPEG, GIF and WebP files come back as images. " + remoteNote,
 			inputSchema: {
 				file_path: z.string().describe("Path of the file on the remote host."),
 				offset: z.number().int().positive().optional().describe("First line to read (1-based)."),
@@ -317,7 +320,7 @@ export function createServer(options: ServerOptions): { server: McpServer; termi
 		{
 			title: "Write a remote file",
 			description:
-				"Create a file on a remote host, or replace its whole content, with UTF-8 text. Missing parent directories are created. To change part of an existing file, use edit.",
+				"Create a file on a remote host, or replace its whole content, with UTF-8 text. Missing parent directories are created. To change part of an existing file, use edit. " + remoteNote,
 			inputSchema: {
 				file_path: z.string().describe("Path of the file on the remote host."),
 				content: z.string().describe("The complete new content."),
@@ -336,7 +339,7 @@ export function createServer(options: ServerOptions): { server: McpServer; termi
 		{
 			title: "Edit a remote file",
 			description:
-				"Replace text in a file on a remote host. old_string must match the file exactly, including indentation, and occur exactly once unless replace_all is set; include enough surrounding lines to make it unique. LF and CRLF line endings are handled. Returns the changed lines with line numbers. Read the file first so that old_string is copied exactly. An empty old_string creates a file that does not exist yet.",
+				"Replace text in a file on a remote host. old_string must match the file exactly, including indentation, and occur exactly once unless replace_all is set; include enough surrounding lines to make it unique. LF and CRLF line endings are handled. Returns the changed lines with line numbers. Read the file first so that old_string is copied exactly. An empty old_string creates a file that does not exist yet. " + remoteNote,
 			inputSchema: {
 				file_path: z.string().describe("Path of the file on the remote host."),
 				old_string: z.string().describe("The exact text to replace."),
@@ -362,7 +365,7 @@ export function createServer(options: ServerOptions): { server: McpServer; termi
 		{
 			title: "Find remote files",
 			description:
-				"Find files on a remote host by glob pattern, such as **/*.py or src/**/test_*.ts, from the pi-env daemon's directory listing (no shell, fast). Inside git repositories, paths ignored by .gitignore are skipped unless include_ignored is set; .git directories are never listed. Directories in the results end with /. Returns absolute paths.",
+				"Find files on a remote host by glob pattern, such as **/*.py or src/**/test_*.ts, from the pi-env daemon's directory listing (no shell, fast). Inside git repositories, paths ignored by .gitignore are skipped unless include_ignored is set; .git directories are never listed. Directories in the results end with /. Returns absolute paths. " + remoteNote,
 			inputSchema: {
 				pattern: z.string().describe("Glob pattern, relative to path, or absolute."),
 				path: z.string().optional().describe("Directory to search (default: the working directory)."),
@@ -395,7 +398,7 @@ export function createServer(options: ServerOptions): { server: McpServer; termi
 		{
 			title: "Search remote file contents",
 			description:
-				"Search file contents on a remote host with ripgrep (or grep -E where ripgrep is not installed). The pattern is a regular expression: Rust syntax with ripgrep, POSIX extended with grep. Hidden files are searched; with ripgrep, .gitignore is honored. output_mode: files_with_matches (default) lists matching files, content shows matching lines as path:line:text, count shows matches per file.",
+				"Search file contents on a remote host with ripgrep (or grep -E where ripgrep is not installed). The pattern is a regular expression: Rust syntax with ripgrep, POSIX extended with grep. Hidden files are searched; with ripgrep, .gitignore is honored. output_mode: files_with_matches (default) lists matching files, content shows matching lines as path:line:text, count shows matches per file. " + remoteNote,
 			inputSchema: {
 				pattern: z.string().describe("Regular expression to search for."),
 				path: z.string().optional().describe("File or directory to search (default: the working directory)."),
@@ -696,7 +699,7 @@ export function createServer(options: ServerOptions): { server: McpServer; termi
 		"upload",
 		{
 			title: "Copy files to a remote host",
-			description: `Copy a file or directory from this machine (where the agent runs) to a remote host, like scp -r: into remote_path when it is an existing directory or ends with /, otherwise as remote_path. Directories are copied recursively; symbolic links inside them are skipped. A new file appears only once it is complete and keeps the local executable bit; an existing file (or link) is overwritten in place, keeping its permissions, as scp does. ${localNote}`,
+			description: `Copy a file or directory from this machine (where the agent runs) to a remote host, like scp -r: into remote_path when it is an existing directory or ends with /, otherwise as remote_path. Directories are copied recursively; symbolic links inside them are skipped. A new file appears only once it is complete and keeps the local executable bit; an existing file (or link) is overwritten in place, keeping its permissions, as scp does. ${remoteNote} ${localNote}`,
 			inputSchema: {
 				local_path: z.string().describe("File or directory on this machine."),
 				remote_path: z.string().describe("Destination on the remote host."),
@@ -723,7 +726,7 @@ export function createServer(options: ServerOptions): { server: McpServer; termi
 		"download",
 		{
 			title: "Copy files from a remote host",
-			description: `Copy a file or directory from a remote host to this machine (where the agent runs), like scp -r: into local_path when it is an existing directory or ends with /, otherwise as local_path. Directories are copied recursively, including git-ignored files; symbolic links inside them are skipped. ${localNote}`,
+			description: `Copy a file or directory from a remote host to this machine (where the agent runs), like scp -r: into local_path when it is an existing directory or ends with /, otherwise as local_path. Directories are copied recursively, including git-ignored files; symbolic links inside them are skipped. ${remoteNote} ${localNote}`,
 			inputSchema: {
 				remote_path: z.string().describe("File or directory on the remote host."),
 				local_path: z.string().describe("Destination on this machine."),
@@ -743,7 +746,7 @@ export function createServer(options: ServerOptions): { server: McpServer; termi
 					? ""
 					: `\nSkipped ${result.skipped.length} symbolic links, special files or names not usable here: ${result.skipped.slice(0, 10).join(", ")}`;
 			return text(
-				`Downloaded ${result.files} file${result.files === 1 ? "" : "s"} (${formatBytes(result.bytes)}) from ${session.name} to ${result.destination} in ${formatDuration(result.durationMs)}.${skipped}`,
+				`Downloaded ${result.files} file${result.files === 1 ? "" : "s"} (${formatBytes(result.bytes)}) from ${session.name}:${result.source} to ${result.destination} in ${formatDuration(result.durationMs)}.${skipped}`,
 			);
 		}),
 	);

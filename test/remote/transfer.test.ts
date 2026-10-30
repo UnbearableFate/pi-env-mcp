@@ -70,6 +70,7 @@ describe.skipIf(TEST_HOST === undefined)(`upload and download with ${TEST_HOST}`
 		const target = join(local, "back");
 		const result = await client.ok("download", { remote_path: `${remote}/tree`, local_path: target });
 		expect(result).toMatch(/Downloaded 4 files \(9\.0 MB\)/);
+		expect(result).toContain(`from ${host}:${remote}/tree to ${target} in`);
 		expect(sha256(readFileSync(join(target, "nested", "big.bin")))).toBe(sha256(big));
 		expect(readFileSync(join(target, "a.txt"), "utf8")).toBe("alpha\n");
 		expect(statSync(join(target, "nested", "deeper", "empty")).size).toBe(0);
@@ -77,6 +78,12 @@ describe.skipIf(TEST_HOST === undefined)(`upload and download with ${TEST_HOST}`
 		mkdirSync(join(local, "into"));
 		await client.ok("download", { remote_path: `${remote}/single/renamed.txt`, local_path: join(local, "into") });
 		expect(readFileSync(join(local, "into", "renamed.txt"), "utf8")).toBe("beta\n");
+
+		// A relative source resolves against the working directory, which a cd in bash moves; the result names it in full.
+		await client.ok("bash", { command: `cd ${remote}/single` });
+		const relative = await client.ok("download", { remote_path: "renamed.txt", local_path: join(local, "relative.txt") });
+		expect(relative).toContain(`from ${host}:${remote}/single/renamed.txt to ${join(local, "relative.txt")} in`);
+		await client.ok("bash", { command: "cd ~" });
 	});
 
 	it("reports a missing source", async () => {

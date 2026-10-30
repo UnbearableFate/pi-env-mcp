@@ -24,6 +24,8 @@ export interface TransferProgress {
 }
 
 export interface TransferResult {
+	/** What was copied, as an absolute path on its own machine (a link given as the source is named, not followed). */
+	source: string;
 	/** Where the copy ended up. */
 	destination: string;
 	files: number;
@@ -213,7 +215,7 @@ export async function upload(
 	for (let index = 0; session.posix && index < executables.length; index += 200) {
 		await session.capture(["chmod", "+x", "--", ...executables.slice(index, index + 200)]);
 	}
-	return { destination, files: files.length, directories: directories.length, bytes: total, skipped, durationMs: Date.now() - started };
+	return { source, destination, files: files.length, directories: directories.length, bytes: total, skipped, durationMs: Date.now() - started };
 }
 
 /**
@@ -267,7 +269,8 @@ export async function download(
 	const signal = options.signal;
 	const context = contextFor(signal);
 	const paths = session.paths;
-	let source = await session.resolve(remoteSource, signal);
+	const resolved = await session.resolve(remoteSource, signal);
+	let source = resolved;
 	let info = getOrThrow(await session.env.fileInfo(source, context));
 	if (info.kind === "symlink") {
 		// Follow a link given explicitly, as `scp` does.
@@ -323,5 +326,13 @@ export async function download(
 			signal,
 		);
 	});
-	return { destination, files: files.length, directories: directories.length, bytes: done, skipped, durationMs: Date.now() - started };
+	return {
+		source: resolved,
+		destination,
+		files: files.length,
+		directories: directories.length,
+		bytes: done,
+		skipped,
+		durationMs: Date.now() - started,
+	};
 }
