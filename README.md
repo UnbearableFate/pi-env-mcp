@@ -193,7 +193,13 @@ The tools then appear as `mcp__remote__bash`, `mcp__remote__read`, and so on.
 command = "pi-env-mcp"            # or "node" with args = ["/path/to/pi-env-mcp/dist/cli.js", "serve"]
 args = ["serve"]
 tool_timeout_sec = 3600           # Codex's default of 60 s is shorter than bash's default timeout
+required = true                   # codex exec: wait for the server before the first turn
 ```
+
+`codex exec` (seen with 0.166.0) starts its first turn without waiting for MCP servers, so without `required = true`
+(or `-c mcp_servers.remote.required=true`) the model may look for the tools before they are there and conclude they
+do not exist. With it, Codex also stops with "required MCP servers failed to initialize" when pi-env-mcp cannot start,
+instead of working without it. The interactive Codex waits for the servers either way.
 
 **Any other MCP client**: run `pi-env-mcp serve` as a stdio server.
 
@@ -241,7 +247,10 @@ share, checked by pi's own validator, plus `runOn` for the host (the default hos
   the default. The host's `env` applies, then the server's; `${NAME}` in a value comes from the environment of the
   agent's machine, where the configuration is.
 - `timeout`: seconds a request may take (default 60, as in pi); each progress notification from the server starts it
-  again. `enabled: false` keeps an entry without starting it. `description` tells the agent what the server is for.
+  again. pi-env-mcp asks the server for progress on every call, also when the agent did not ask, as pi does. A call
+  that runs out of time is cancelled on the server. Set a longer `timeout` for tools that can take long without
+  reporting progress. `enabled: false` keeps an entry without starting it. `description` tells the agent what the
+  server is for.
 - Only stdio servers: an HTTP server needs no remote host, so register it with the agent directly.
 - `add` takes `--host`, `--env KEY=VALUE` (repeatable), `--cwd` and `--description`; like `pi mcp add`, it does not
   connect. `list` takes `--json`.
@@ -265,8 +274,8 @@ When a server exits, the daemon also kills what it left running in its process g
 leaves nothing behind. A server that starts something meant to outlive it must put it in a session of its own
 (`setsid`). Resources, prompts and requests from the server to the client (sampling, elicitation) are not passed on.
 
-**Codex**: allow for the wait in `startup_timeout_sec` when a server is slow to start, and set `tool_timeout_sec` for
-long calls.
+**Codex**: allow for the wait in `startup_timeout_sec` (default 10) when a server is slow to start, set
+`tool_timeout_sec` for long calls, and `required = true` for `codex exec` (see the Codex registration above).
 
 ## Configuration
 

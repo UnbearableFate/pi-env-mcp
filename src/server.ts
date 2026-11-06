@@ -201,21 +201,23 @@ function remoteToolDefinition(remote: RemoteTool): ListToolsResult["tools"][numb
 	};
 }
 
-/** Call a remote server's tool, passing progress and cancellation through; its result goes back as it came. */
+/**
+ * Call a remote server's tool, passing progress and cancellation through; its result goes back as it came. Progress is
+ * asked of the server even when the agent did not ask for it, as pi does: each progress notification restarts the
+ * request's timeout, so a long call that reports progress is not cut off. It goes on to the agent only if the agent
+ * asked for it.
+ */
 async function callRemoteTool(remote: RemoteTool, request: CallToolRequest, extra: Extra): Promise<CallToolResult> {
 	const token = extra._meta?.progressToken;
 	try {
 		const result = await remote.server.callTool(remote.tool.name, request.params.arguments ?? {}, {
 			signal: extra.signal,
-			...(token === undefined
-				? {}
-				: {
-						onProgress: (progress) => {
-							void extra
-								.sendNotification({ method: "notifications/progress", params: { ...progress, progressToken: token } })
-								.catch(() => {});
-						},
-					}),
+			onProgress: (progress) => {
+				if (token === undefined) return;
+				void extra
+					.sendNotification({ method: "notifications/progress", params: { ...progress, progressToken: token } })
+					.catch(() => {});
+			},
 		});
 		return result as CallToolResult;
 	} catch (error) {

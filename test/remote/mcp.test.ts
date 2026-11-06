@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { readFileSync, rmSync } from "node:fs";
+import { readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { ToolListChangedNotificationSchema } from "@modelcontextprotocol/sdk/types.js";
@@ -59,6 +59,11 @@ describe.skipIf(TEST_HOST === undefined)(`MCP servers on ${TEST_HOST}`, () => {
 			"--quote='x' \"y\" $HOME",
 		);
 		expect(added.stdout).toContain(`Added MCP server "fixture" (runs on ${host})`);
+		// A short request timeout, as `mcp add` (like pi's) leaves timeouts to the file: long calls must live on progress.
+		const file = join(configDir, "config.json");
+		const config = JSON.parse(readFileSync(file, "utf8")) as { mcpServers: { fixture: { timeout?: number } } };
+		config.mcpServers.fixture.timeout = 3;
+		writeFileSync(file, JSON.stringify(config, null, 2));
 		client = await new TestClient(configDir).connect();
 	});
 
@@ -115,6 +120,14 @@ describe.skipIf(TEST_HOST === undefined)(`MCP servers on ${TEST_HOST}`, () => {
 		controller.abort();
 		await expect(slow).rejects.toThrow();
 		expect(await client.ok("fixture__echo", { text: "still there" })).toBe("still there");
+	});
+
+	it("asks the server for progress even when the agent does not, so a long call outlives the request timeout", async () => {
+		const result = await client.client.callTool({ name: "fixture__slow", arguments: { steps: 50 } }, undefined, {
+			timeout: 30_000,
+		});
+		expect(result).toMatchObject({ content: [{ type: "text", text: "done after 50 steps" }] });
+		expect(result.isError).toBeFalsy();
 	});
 
 	it("announces changed tools", async () => {
