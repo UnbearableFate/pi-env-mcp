@@ -355,6 +355,10 @@ the host's own `/tmp`, so transfers really cross machines even where home direct
   agent has no terminal to ask for the passphrase).
 - **"no shared ssh connection to HOST is open"**: the master of a `shareConnection` host closed or expired; open it
   again with `ssh -fN HOST`.
+- **"Session open refused by peer"** (with `shareConnection`): the master is open but full. sshd limits the sessions of
+  one connection (`MaxSessions`, 10 by default), and every `serve`, ssh command and terminal through the master holds
+  one. Ending sessions you don't need helps; opening the master again does not. ssh then tries a connection of its own,
+  so the message usually ends in "Permission denied" too.
 - **A command needs input**: `bash` gives commands an empty stdin; use a terminal (`terminal_open`) for interactive
   programs.
 - **Long work times out**: use `run_in_background`, then `job_status` with `wait`.

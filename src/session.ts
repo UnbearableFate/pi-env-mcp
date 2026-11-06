@@ -260,7 +260,6 @@ export class HostSession {
 	}
 }
 
-/** Turn a failure to connect into a message that tells the agent what the user has to do. */
 /**
  * An `ssh` for pi-env that goes through the user's master connection to the target. pi-env passes `ControlPath=none`;
  * ssh keeps the first value it gets for an option, so the path given before pi-env's arguments wins, while pi-env's
@@ -285,6 +284,7 @@ async function sharedConnectionSsh(configDir: string, name: string, target: SshC
 	return wrapper;
 }
 
+/** Turn a failure to connect into a message that tells the agent what the user has to do. */
 export function connectError(name: string, host: HostConfig, error: unknown): Error {
 	const target = describeTarget(name, host);
 	if (error instanceof HostKeyUnknownError) {
@@ -297,10 +297,17 @@ export function connectError(name: string, host: HostConfig, error: unknown): Er
 			`The SSH host key of "${name}" (${target}) CHANGED since it was trusted. This can mean a reinstalled server or a man-in-the-middle attack. Ask the user to verify it and run: pi-env-mcp trust ${name} --replace`,
 		);
 	}
+	// ssh's diagnostics come in an SshError when detecting the system or deploying the daemon fails, and after "remote
+	// stderr:" in pi-env's error when starting the daemon itself fails.
 	const message = errorMessage(error);
-	if (error instanceof SshError || /^ssh /.test(message)) {
+	if (error instanceof SshError || /^ssh |\nremote stderr:\n/.test(message)) {
 		const hints: string[] = [];
-		if (/Permission denied/i.test(message) && host.shareConnection === true) {
+		if (/Session open refused by peer/i.test(message)) {
+			// The master is fine but full: ssh then tries a connection of its own, which BatchMode usually cannot log in.
+			hints.push(
+				`The shared ssh connection to ${host.host ?? name} is open but has no free session: its server limits the sessions of one connection (sshd MaxSessions, 10 by default), and each pi-env-mcp serve, ssh command or terminal going through it holds one. Ask the user to end sessions that are not needed; opening the connection again does not help.`,
+			);
+		} else if (/Permission denied/i.test(message) && host.shareConnection === true) {
 			hints.push(
 				`The shared ssh connection is probably closed or expired. Ask the user to open it again in a terminal with: ssh -fN ${host.host ?? name}`,
 			);
