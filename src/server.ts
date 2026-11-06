@@ -1,21 +1,31 @@
+import { normalizeMcpInputSchema } from "@earendil-works/pi-mcp";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { RequestHandlerExtra } from "@modelcontextprotocol/sdk/shared/protocol.js";
-import type { CallToolResult, ServerNotification, ServerRequest } from "@modelcontextprotocol/sdk/types.js";
+import {
+	type CallToolRequest,
+	CallToolRequestSchema,
+	type CallToolResult,
+	type ListToolsResult,
+	ListToolsRequestSchema,
+	type ServerNotification,
+	type ServerRequest,
+} from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 import { describeTarget } from "./config.ts";
 import { editFile, readFile, writeFile } from "./files.ts";
 import { JOB_SIGNALS, type Job, JobStore } from "./jobs.ts";
 import { EditError } from "./lib/edit.ts";
 import { errorMessage, formatBytes, formatDuration, sleep } from "./lib/util.ts";
+import type { RemoteMcpServer, RemoteMcpServers, RemoteTool } from "./mcp.ts";
 import { glob, grep } from "./search.ts";
 import type { HostManager, HostSession } from "./session.ts";
 import { runShell, type ShellResult } from "./shell.ts";
 import { TerminalRegistry } from "./terminals.ts";
 import { download, upload } from "./transfer.ts";
+import { VERSION } from "./version.ts";
 
 type Extra = RequestHandlerExtra<ServerRequest, ServerNotification>;
 
-const VERSION = "0.1.0";
 
 function text(body: string, isError = false): CallToolResult {
 	return { content: [{ type: "text", text: body }], ...(isError ? { isError: true } : {}) };
@@ -147,13 +157,130 @@ function oneLine(command: string, max = 100): string {
 	return flat.length > max ? `${flat.slice(0, max - 3)}...` : flat;
 }
 
+/** How a remote MCP server's state reads in `hosts` and `pi-env-mcp mcp list`. */
+export function describeMcpServer(server: RemoteMcpServer): string {
+	const tools = `${server.tools.length} tool${server.tools.length === 1 ? "" : "s"}`;
+	switch (server.state) {
+		case "connected":
+			return `connected, ${tools}`;
+		case "disconnected":
+			return `disconnected (starts again on the next call)${server.tools.length > 0 ? `, ${tools} listed` : ""}`;
+		case "failed":
+			return "failed to start (hosts with connect: true tries again)";
+		default:
+			return server.state;
+	}
+}
+
+/** The MCP servers on a host, for `hosts`. */
+function mcpLines(servers: readonly RemoteMcpServer[]): string[] {
+	const lines: string[] = [];
+	for (const server of servers) {
+		lines.push(`  MCP server ${server.name}: ${describeMcpServer(server)}; its tools are ${mcpPrefix(server)}*`);
+		if (server.state !== "connected" && server.error !== undefined) lines.push(`    ${server.error.replaceAll("\n", "\n    ")}`);
+	}
+	return lines;
+}
+
+/** The start of the agent-facing names of a server's tools. */
+function mcpPrefix(server: RemoteMcpServer): string {
+	return `${server.name.replace(/[^A-Za-z0-9_]/g, "_")}__`;
+}
+
+/** A remote server's tool as this server lists it: the server's own definition, under the name the agent sees. */
+function remoteToolDefinition(remote: RemoteTool): ListToolsResult["tools"][number] {
+	const { tool } = remote;
+	return {
+		name: remote.name,
+		...(tool.title === undefined ? {} : { title: tool.title }),
+		description: tool.description ?? tool.title ?? `${tool.name} (MCP server ${remote.server.name} on ${remote.server.host})`,
+		inputSchema: normalizeMcpInputSchema(tool.inputSchema) as ListToolsResult["tools"][number]["inputSchema"],
+		...(tool.outputSchema === undefined ? {} : { outputSchema: tool.outputSchema as ListToolsResult["tools"][number]["outputSchema"] }),
+		...(tool.annotations === undefined ? {} : { annotations: tool.annotations }),
+		...(tool._meta === undefined ? {} : { _meta: tool._meta }),
+	};
+}
+
+/** Call a remote server's tool, passing progress and cancellation through; its result goes back as it came. */
+async function callRemoteTool(remote: RemoteTool, request: CallToolRequest, extra: Extra): Promise<CallToolResult> {
+	const token = extra._meta?.progressToken;
+	try {
+		const result = await remote.server.callTool(remote.tool.name, request.params.arguments ?? {}, {
+			signal: extra.signal,
+			...(token === undefined
+				? {}
+				: {
+						onProgress: (progress) => {
+							void extra
+								.sendNotification({ method: "notifications/progress", params: { ...progress, progressToken: token } })
+								.catch(() => {});
+						},
+					}),
+		});
+		return result as CallToolResult;
+	} catch (error) {
+		if (extra.signal.aborted) return text("Cancelled.", true);
+		return text(`MCP server "${remote.server.name}" on ${remote.server.host}: ${describeError(error)}`, true);
+	}
+}
+
+/**
+ * Offer the remote servers' tools next to this server's own. The SDK's `McpServer` answers tools/list and tools/call
+ * for the tools registered with it, validating arguments with their zod schemas; remote tools keep the JSON schemas
+ * their servers gave, so they bypass it: this wraps the two handlers as `McpServer` installs them, before the first
+ * `registerTool`.
+ */
+function offerRemoteTools(server: McpServer, mcp: RemoteMcpServers): void {
+	const low = server.server;
+	const install = low.setRequestHandler.bind(low);
+	type Handler = (request: never, extra: Extra) => unknown;
+	const wrapped = (schema: unknown, handler: Handler): void => {
+		if (schema === ListToolsRequestSchema) {
+			const own = handler as unknown as (request: unknown, extra: Extra) => Promise<ListToolsResult> | ListToolsResult;
+			install(ListToolsRequestSchema, async (request, extra) => {
+				const listed = await own(request, extra);
+				return { ...listed, tools: [...listed.tools, ...mcp.tools().map(remoteToolDefinition)] };
+			});
+			return;
+		}
+		if (schema === CallToolRequestSchema) {
+			const own = handler as unknown as (request: CallToolRequest, extra: Extra) => Promise<CallToolResult>;
+			install(CallToolRequestSchema, (request, extra) => {
+				const remote = mcp.find(request.params.name);
+				return remote === undefined ? own(request, extra) : callRemoteTool(remote, request, extra);
+			});
+			return;
+		}
+		(install as (schema: unknown, handler: Handler) => void)(schema, handler);
+	};
+	low.setRequestHandler = wrapped as typeof low.setRequestHandler;
+	mcp.onToolsChanged(() => {
+		if (server.isConnected()) server.sendToolListChanged();
+	});
+}
+
+/** What the agent learns about the remote servers when it connects. */
+function mcpInstructions(mcp: RemoteMcpServers | undefined): string[] {
+	if (mcp === undefined || mcp.servers.length === 0) return [];
+	const lines = [
+		"MCP servers run on the hosts and their tools are offered here, named <server>__<tool> (hosts shows their state and errors; a server that went away starts again on the next call, and hosts with connect: true retries one that failed to start):",
+	];
+	for (const server of mcp.servers) {
+		const about = server.entry.config.description ?? server.instructions;
+		lines.push(`- ${server.name} on ${server.host} (tools ${mcpPrefix(server)}*)${about === undefined ? "" : `: ${about.length > 2000 ? `${about.slice(0, 2000)}...` : about}`}`);
+	}
+	return lines;
+}
+
 export interface ServerOptions {
 	manager: HostManager;
+	/** MCP servers on the hosts whose tools this server offers too. */
+	mcp?: RemoteMcpServers;
 }
 
 /** The MCP server and its tools. */
 export function createServer(options: ServerOptions): { server: McpServer; terminals: TerminalRegistry } {
-	const { manager } = options;
+	const { manager, mcp } = options;
 	const terminals = new TerminalRegistry();
 	const names = manager.names();
 	const defaultHost = manager.defaultHost;
@@ -164,12 +291,14 @@ export function createServer(options: ServerOptions): { server: McpServer; termi
 		`Hosts: ${hostList}.${names.length > 1 || defaultHost === undefined ? ' Pass "host" to choose one.' : ""}`,
 		"All paths are paths on the remote host; relative paths resolve against the host's working directory, which a `cd` in bash changes for later calls.",
 		"Use bash for commands; bash with run_in_background, then job_status and job_kill, for long-running work (jobs keep running if the connection drops); terminal_open, terminal_send, terminal_read and terminal_close for interactive programs and shell state; read, write, edit, glob and grep for files; upload and download to copy between this machine and a host.",
+		...mcpInstructions(mcp),
 	].join("\n");
 
 	const remoteNote =
 		"Relative remote paths resolve against the host's working directory: the configured cwd (else the remote home), until a `cd` in bash moves it for later calls; hosts shows the current one.";
 
 	const server = new McpServer({ name: "pi-env-mcp", title: "Remote hosts over SSH (pi-env)", version: VERSION }, { instructions });
+	if (mcp !== undefined && mcp.servers.length > 0) offerRemoteTools(server, mcp);
 
 	const host = z.string().optional().describe(`Remote host to use: ${hostList}.`);
 
@@ -178,7 +307,7 @@ export function createServer(options: ServerOptions): { server: McpServer; termi
 		{
 			title: "List remote hosts",
 			description:
-				"List the remote hosts this server can reach: SSH target, connection state, system (OS, hostname, home), current working directory and open terminals. connect: true connects now (deploying the pi-env daemon if needed) to check that a host works; reconnect: true restarts a host's connection, which closes its terminals but leaves background jobs running.",
+				"List the remote hosts this server can reach: SSH target, connection state, system (OS, hostname, home), current working directory, open terminals, and the MCP servers running there with their state and errors. connect: true connects now (deploying the pi-env daemon if needed) to check that a host works, and starts its MCP servers that are not running; reconnect: true restarts a host's connection, which closes its terminals and restarts its MCP servers but leaves background jobs running.",
 			inputSchema: {
 				host: host.describe("Only this host (default: all)."),
 				connect: z.boolean().optional().describe("Connect now if not connected yet."),
@@ -193,9 +322,15 @@ export function createServer(options: ServerOptions): { server: McpServer; termi
 			}
 			const errors: string[] = [];
 			if (args.reconnect) {
-				for (const name of selected) await manager.reconnect(name).catch((error: unknown) => errors.push(`${name}: ${describeError(error)}`));
+				for (const name of selected) {
+					await manager.reconnect(name).catch((error: unknown) => errors.push(`${name}: ${describeError(error)}`));
+					// The servers went away with the old connection; start them on the new one now, not at their next call.
+					await Promise.all((mcp?.on(name) ?? []).map((remote) => remote.getClient().catch(() => {})));
+				}
 			} else if (args.connect) {
 				await Promise.all(selected.map((name) => manager.session(name).catch((error: unknown) => errors.push(`${name}: ${describeError(error)}`))));
+				// Also start MCP servers that are not running, such as one whose first start failed.
+				await Promise.all(selected.flatMap((name) => (mcp?.on(name) ?? []).map((remote) => remote.getClient().catch(() => {}))));
 			}
 			const lines: string[] = [];
 			for (const name of selected) {
@@ -206,6 +341,7 @@ export function createServer(options: ServerOptions): { server: McpServer; termi
 					lines.push(`${label}: ssh ${target}; not connected (connects on first use)`);
 					const error = manager.lastError(name);
 					if (error !== undefined) lines.push(`  last error: ${error.replaceAll("\n", "\n    ")}`);
+					lines.push(...mcpLines(mcp?.on(name) ?? []));
 					continue;
 				}
 				const info = session.info;
@@ -214,6 +350,7 @@ export function createServer(options: ServerOptions): { server: McpServer; termi
 				lines.push(`  working directory: ${session.cwd}${session.cwd === session.baseCwd ? "" : ` (initially ${session.baseCwd})`}`);
 				const open = terminals.list(name);
 				if (open.length > 0) lines.push(`  terminals: ${open.map((terminal) => terminal.describe()).join(", ")}`);
+				lines.push(...mcpLines(mcp?.on(name) ?? []));
 			}
 			if (errors.length > 0) lines.push("", ...errors);
 			return text(lines.join("\n"), errors.length > 0);

@@ -11,6 +11,10 @@ built on the [`pi-env`](https://github.com/earendil-works/pi/tree/main/packages/
                                        └───────────────────────────┘                     └─────────────────────┘
 ```
 
+It also runs **MCP servers on the hosts** (a job scheduler's server on a cluster's login node, say) and offers their
+tools next to its own, as pi does with servers on its execution environments: they run inside the same pi-env
+connection, so a host costs one SSH session however many servers run there ([details](#mcp-servers-on-the-hosts)).
+
 On first use of a host, pi-env detects the remote system, uploads its daemon for that platform (verified by SHA-256,
 stored in `~/.pi/mobile/tools/` there) and starts it over `ssh` ([details](#the-pi-env-daemon-on-the-remote-host)).
 Every tool call then goes through that one connection: a command costs one round trip (about 2 ms on a LAN) instead of
@@ -24,6 +28,7 @@ a new SSH handshake, and state persists between calls. A lost connection is rest
 | Terminals (`terminal_*`): shell variables, virtualenvs, REPLs | the daemon | no | no |
 | Background jobs (`bash` with `run_in_background`) | the remote host | **yes** | **yes** |
 | Foreground commands | the daemon | no (killed, reported as lost) | no |
+| MCP servers on the hosts | the daemon | no (started again on the next call) | no (started with the server) |
 
 Background jobs run detached from the daemon (in their own session via `setsid -f`, or their own process group), with
 their output, pid and exit status under `~/.local/state/pi-env-mcp/jobs/<hostname>/` on the remote host.
@@ -46,6 +51,7 @@ their output, pid and exit status under `~/.local/state/pi-env-mcp/jobs/<hostnam
 | `terminal_read` | New output since the last read, or the whole screen (for vim, less, htop) |
 | `terminal_close` | Close a terminal |
 | `upload` / `download` | Copy files or directory trees between this machine and a host, like `scp -r`: new files appear only once complete; existing files are overwritten in place, keeping their permissions and links |
+| `<server>__<tool>` | The tools of the [MCP servers on the hosts](#mcp-servers-on-the-hosts), as their servers define them |
 
 Relative remote paths, in every tool, resolve against the host's working directory: the configured `cwd` (else the
 remote home), until a `cd` in `bash` moves it for later calls. `hosts` shows the current one, and `upload` and
@@ -59,11 +65,11 @@ escape sequences. Every tool takes an optional `host`; it defaults to the only c
 - Node.js 22.19 or newer on the machine that runs the agent.
 - OpenSSH, with key-based login to the remote host (ssh runs in `BatchMode`: no password prompts). An `ssh-agent`, or
   an `IdentityFile` in `~/.ssh/config`, works.
-- Remote host: Linux or macOS on x86-64 or arm64, tested on Linux, with `sh`, `uname`, one of `sha256sum`, `shasum` or
-  `openssl` (to verify the daemon), and a home directory that may hold programs (not mounted `noexec`). The daemon
-  installs itself there ([how](#the-pi-env-daemon-on-the-remote-host)); no root needed. Background jobs need `setsid`
-  from util-linux (standard on Linux) or `bash` (macOS has it); `ripgrep` is optional. pi-env also runs on Android
-  (Termux) and Windows hosts; those are untested here, and Windows hosts get no terminals or background jobs.
+- Remote host: Linux on x86-64 or arm64, with `sh`, `uname`, one of `sha256sum`, `shasum` or `openssl` (to verify the
+  daemon), and a home directory that may hold programs (not mounted `noexec`). The daemon installs itself there
+  ([how](#the-pi-env-daemon-on-the-remote-host)); no root needed. Background jobs need `setsid` from util-linux
+  (standard on Linux); `ripgrep` is optional. pi-env also runs on macOS, Android (Termux) and Windows hosts, but the
+  current [pi-env build](#the-pi-env-build-in-vendor) has daemons for Linux only.
 
 ## Install
 
@@ -101,7 +107,7 @@ $ pi-env-mcp check devbox
 devbox: connected in 1.5 s (ssh devbox)
   system:      linux x86_64, hostname devbox
   home:        /home/me; working directory /home/me
-  daemon:      pi-env 1.4.0 (protocol 1, pid 3811851, features: listFiles)
+  daemon:      pi-env 1.5.0 (protocol 1, pid 3811851, features: listFiles, process)
   ripgrep:     installed
   latency:     1.2 ms per command without a shell, 1.8 ms with bash
 ```
@@ -154,7 +160,7 @@ ssh devbox 'mkdir -p ~/.pi/mobile/tools && chmod 700 ~/.pi/mobile/tools'
 scp "$BIN" "devbox:.pi/mobile/tools/$NAME"
 ssh devbox "chmod 700 ~/.pi/mobile/tools/$NAME"
 
-ssh devbox "~/.pi/mobile/tools/$NAME --version"                       # pi-env 1.4.0
+ssh devbox "~/.pi/mobile/tools/$NAME --version"                       # pi-env 1.5.0
 ssh devbox "~/.pi/mobile/tools/$NAME serve --token test" < /dev/null  # PI-ENV test, then it exits: stdin ended
 ```
 
@@ -194,6 +200,73 @@ tool_timeout_sec = 3600           # Codex's default of 60 s is shorter than bash
 One server can offer several hosts (the agent passes `host`), or you can register one server per host, which names the
 tools after it: `claude mcp add gpu -- pi-env-mcp serve --host gpu` gives `mcp__gpu__bash`. A `--host` name that is not
 configured is used directly as an SSH host or alias (trust it first with `pi-env-mcp trust NAME`).
+
+## MCP servers on the hosts
+
+Some MCP servers have to run on the remote machine: a job scheduler's server next to PBS or Slurm on a login node, a
+server for a database only that machine reaches. pi-env-mcp starts them there and offers their tools to the agent next
+to its own, the way pi runs stdio servers on its execution environments: through the host's pi-env connection with
+the daemon's `process` operation (plain pipes for stdin, stdout and stderr), spoken to with pi's MCP client
+(`@earendil-works/pi-mcp`, its `PipeTransport`). The server does not open an SSH session of its own: one `serve`
+holds one session per host for its commands, terminals, transfers and every MCP server there, which matters on
+clusters that limit sessions per connection.
+
+```sh
+pi-env-mcp mcp add pbs --host cluster -- /work/me/tools/pbs-mcp serve --project demo
+pi-env-mcp mcp list            # start each server, print its state and tools; exit 1 if one fails
+pi-env-mcp mcp remove pbs
+```
+
+The servers live in the configuration under `mcpServers`, in the shape pi, Claude Code, Codex and other MCP clients
+share, checked by pi's own validator, plus `runOn` for the host (the default host when left out):
+
+```json
+{
+	"mcpServers": {
+		"pbs": {
+			"command": "/work/me/tools/pbs-mcp",
+			"args": ["serve", "--project", "demo"],
+			"env": { "PBS_TOKEN": "${PBS_TOKEN}" },
+			"cwd": "~/work",
+			"description": "Submit and watch batch jobs",
+			"timeout": 300,
+			"runOn": { "host": "cluster" }
+		}
+	}
+}
+```
+
+- `command` and `args` reach the program as they are, without a shell. A leading `~/` in `command`, an argument or
+  `cwd` is the remote home; a relative `cwd` resolves against the host's `cwd` (else the remote home), which is also
+  the default. The host's `env` applies, then the server's; `${NAME}` in a value comes from the environment of the
+  agent's machine, where the configuration is.
+- `timeout`: seconds a request may take (default 60, as in pi); each progress notification from the server starts it
+  again. `enabled: false` keeps an entry without starting it. `description` tells the agent what the server is for.
+- Only stdio servers: an HTTP server needs no remote host, so register it with the agent directly.
+- `add` takes `--host`, `--env KEY=VALUE` (repeatable), `--cwd` and `--description`; like `pi mcp add`, it does not
+  connect. `list` takes `--json`.
+
+**Tool names.** A server's tools are offered as `<server>__<tool>`: pi's names (`createMcpToolName`: characters other
+than letters, digits and `_` become `_`, long or colliding names get a hash suffix) without pi's `mcp__` prefix,
+because the agent puts its own in front. Registered as `remote`, server `pbs`'s tool `job_submit` is
+`mcp__remote__pbs__job_submit` in Claude Code. Descriptions, input and output schemas and annotations
+(`readOnlyHint`, ...) are the server's own, unchanged; results, including `structuredContent` and `isError`, come back
+as the server sent them, and so do progress notifications. Cancelling a call cancels it on the server.
+
+**Lifecycle.** `serve` starts the servers of the hosts it offers, and waits up to `--mcp-wait` seconds (default 8) for
+them before it answers the agent, so their tools and instructions are there from the first listing; a server that takes
+longer appears later through `tools/list_changed`, as does any change of a server's tools. A server that exits, or
+whose connection drops (the daemon then kills it), is shown as disconnected and starts again on the next call of one of
+its tools; its tools stay listed meanwhile. `hosts` shows each server's state and the end of its stderr when it failed;
+`hosts` with `connect: true` starts servers that failed, with `reconnect: true` restarts them on a new connection.
+When the agent quits, each server's stdin is closed and it is killed 2 s later if it has not exited.
+
+When a server exits, the daemon also kills what it left running in its process group, so a wrapper such as `npx`
+leaves nothing behind. A server that starts something meant to outlive it must put it in a session of its own
+(`setsid`). Resources, prompts and requests from the server to the client (sampling, elicitation) are not passed on.
+
+**Codex**: allow for the wait in `startup_timeout_sec` when a server is slow to start, and set `tool_timeout_sec` for
+long calls.
 
 ## Configuration
 
@@ -246,6 +319,20 @@ configured is used directly as an SSH host or alias (trust it first with `pi-env
 - `upload` and `download` read and write local files with the server's permissions; local relative paths are relative
   to the directory the agent started the server in.
 
+## The pi-env build in vendor/
+
+The `process` operation and `PipeTransport` are on pi's main branch and not yet in a release on npm, so
+`@earendil-works/pi-env` and `@earendil-works/pi-mcp` come from tarballs in `vendor/`, built from a pi checkout by
+`scripts/vendor-pi.sh` (version `1.5.0-main.<commit>`): each package compiled against the npm releases of its
+dependencies, and the pi-env daemon built with pi's pinned Rust toolchain for Linux on x86-64 and arm64, statically
+linked as pi's releases are. Daemons for macOS, Windows and Android need their own build machines, so this build
+reaches Linux hosts only. Once pi releases these, the dependencies go back to npm and `vendor/` goes away.
+
+```sh
+scripts/vendor-pi.sh ../pi      # a clean checkout of earendil-works/pi; needs rustup
+npm install
+```
+
 ## Development
 
 ```sh
@@ -273,5 +360,7 @@ the host's own `/tmp`, so transfers really cross machines even where home direct
 - **Long work times out**: use `run_in_background`, then `job_status` with `wait`.
 - **Disk use on the host**: the complete output of truncated commands stays in `/tmp/tmp-*/pi-output-*.log` so the
   agent can read it later (as in Pi); finished background jobs keep their logs until `job_kill` with `remove`.
+- **An MCP server's tools are missing**: `hosts` shows its state and the end of its stderr; `pi-env-mcp mcp list` starts
+  each server on its own and reports the same. `hosts` with `connect: true` tries a failed server again.
 - **Diagnostics**: `pi-env-mcp serve --verbose` (or `PI_ENV_MCP_DEBUG=1`) logs connections and daemon messages to
-  stderr, which agents usually keep in their MCP logs.
+  stderr, which agents usually keep in their MCP logs, including the stderr of MCP servers on the hosts.

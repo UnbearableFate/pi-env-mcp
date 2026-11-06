@@ -1,6 +1,6 @@
 {
 	"name": "pi-env-mcp",
-	"version": "0.1.0",
+	"version": "0.2.0",
 	"description": "MCP server that gives Claude Code, Codex and other MCP agents persistent access to remote machines over SSH through the pi-env daemon",
 	"type": "module",
 	"bin": {
@@ -30,13 +30,14 @@
 	],
 	"license": "MIT",
 	"dependencies": {
-		"@earendil-works/chord": "1.4.0",
-		"@earendil-works/pi-durable": "1.4.0",
-		"@earendil-works/pi-env": "1.4.0",
-		"@modelcontextprotocol/sdk": "1.32.1",
+		"@earendil-works/chord": "1.5.0",
+		"@earendil-works/pi-durable": "1.5.0",
+		"@earendil-works/pi-env": "file:vendor/earendil-works-pi-env-1.5.0-main.8a19e8c4a.tgz",
+		"@earendil-works/pi-mcp": "file:vendor/earendil-works-pi-mcp-1.5.0-main.8a19e8c4a.tgz",
+		"@modelcontextprotocol/sdk": "1.32.2",
 		"@xterm/headless": "6.0.0",
 		"picomatch": "4.0.7",
-		"zod": "4.6.5"
+		"zod": "4.6.7"
 	},
 	"devDependencies": {
 		"@types/node": "22.19.19",

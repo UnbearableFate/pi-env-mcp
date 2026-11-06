@@ -10,7 +10,7 @@ import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 export const TEST_HOST = process.env.PI_ENV_MCP_TEST_HOST;
 
 /** The server under test: the sources, or a build given by PI_ENV_MCP_TEST_CLI (e.g. dist/cli.js). */
-const cli = process.env.PI_ENV_MCP_TEST_CLI ?? join(import.meta.dirname, "..", "..", "src", "cli.ts");
+export const cli = process.env.PI_ENV_MCP_TEST_CLI ?? join(import.meta.dirname, "..", "..", "src", "cli.ts");
 
 /** A configuration directory with the test host added and its key trusted. */
 export function prepareConfig(host: string): string {
