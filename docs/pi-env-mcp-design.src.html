@@ -1,0 +1,402 @@
+<!doctype html>
+<html lang="zh-CN" data-register="blueprint">
+<head>
+<title>pi-env-mcp 设计说明：每台主机 1 条 SSH 连接</title>
+<link rel="stylesheet" href="kit.css" data-ve-kit>
+<style>
+.opt .sh { stroke-dasharray: 5 4; }
+.act { fill: var(--accent-dim); stroke: var(--accent); stroke-width: 1; }
+.tick { fill: var(--accent); }
+.slot-t { font-family: var(--font-mono); font-size: 14px; text-anchor: middle; dominant-baseline: central; fill: var(--text); }
+.slot-x { stroke: var(--st); stroke-dasharray: 4 3; }
+.co-notes { list-style: none; padding: 0; margin: var(--s-3) 0 0; display: grid; gap: var(--s-2); max-width: 65ch; }
+.co-notes li { color: var(--text-dim); }
+.co-notes b { color: var(--text); font-weight: 600; margin-right: var(--s-2); }
+.name-seg { font-family: var(--font-mono); font-size: 26px; fill: var(--text); dominant-baseline: central; }
+.name-seg.key { fill: var(--accent); font-weight: 600; }
+.brk { fill: none; stroke: var(--border-bright); stroke-width: 1.25; }
+.brk.key { stroke: var(--accent); stroke-width: 2; }
+.lines { display: flex; align-items: center; gap: var(--s-2); }
+.lines i { display: block; height: 6px; border-radius: 1px; background: var(--accent); opacity: 1; }
+.lines span { font-variant-numeric: tabular-nums; min-width: 3ch; text-align: right; }
+.ve-table td code { overflow-wrap: anywhere; }
+.ve-table td.mod { font-family: var(--font-mono); white-space: nowrap; }
+</style>
+</head>
+<body>
+<nav class="ve-toc" aria-label="Sections"><div>
+<a href="#conn">连接</a><a href="#state">状态</a><a href="#mcp">远端 MCP</a><a href="#sessions">会话</a><a href="#trust">信任</a><a href="#code">代码</a><a href="#limits">边界</a>
+</div><span class="pos"></span></nav>
+<main>
+<header>
+  <p class="eyebrow">设计说明 · pi-env-mcp</p>
+  <h1>每台主机 <span class="num">1</span> 条 SSH 连接，承载全部工具调用</h1>
+  <p class="lead">agent 通过 MCP 调用本机的 pi-env-mcp。它对每台主机只开一条 ssh，远端的 pi-env daemon 执行命令、终端、文件操作和<b>远端 MCP 服务</b>。</p>
+  <p class="meta">pi-env-mcp 0.2.0 · main 6aab119 · pi-env / pi-mcp 1.5.0-main.8a19e8c4a · 数字为 2026-11-06 在 Miyabi（miyabi-g1, aarch64）实测</p>
+</header>
+
+<figure>
+  <div class="frame"><svg class="ve-svg" viewBox="0 0 960 380" aria-label="本机的 agent 经 stdio 调用 pi-env-mcp serve；serve 经一条 ssh 会话连到远端 pi-env daemon；daemon 运行命令、终端、MCP 服务；后台作业脱离 daemon。">
+    <rect class="ve-bnd" x="20" y="30" width="480" height="330"/>
+    <text class="ve-bnd-t" x="32" y="50">本机 · fern01</text>
+    <rect class="ve-bnd" x="560" y="30" width="380" height="330"/>
+    <text class="ve-bnd-t" x="572" y="50">远端主机 · miyabi-g</text>
+
+    <path class="ve-e" d="M165 130V200"/>
+    <text class="ve-el r" x="175" y="168">MCP · stdio</text>
+    <path class="ve-e" d="M285 236H330"/>
+    <text class="ve-el" x="307" y="225">ssh</text>
+    <path class="ve-e is-hot" d="M480 236H590"/>
+    <text class="ve-el" x="535" y="225">1 个会话</text>
+    <path class="ve-e" d="M760 236H780V84H800"/>
+    <path class="ve-e" d="M760 236H780V144H800"/>
+    <path class="ve-e" d="M760 236H780V204H800"/>
+    <path class="ve-e is-async" d="M760 236H780V312H800"/>
+
+    <path data-flow="call" data-every="700" d="M165 100V236H675"/>
+    <g class="ve-dots" aria-hidden="true"></g>
+
+    <g class="ve-n"><rect class="sh" x="45" y="70" width="240" height="60"/><text x="165" y="92">Claude Code / Codex</text><text class="sub" x="165" y="114">MCP 客户端</text></g>
+    <g class="ve-n is-key"><rect class="sh" x="45" y="200" width="240" height="72"/><text x="165" y="226">pi-env-mcp serve</text><text class="sub" x="165" y="250">15 个工具 · 远端 MCP 路由</text></g>
+    <text class="ve-tag" x="45" y="312">读取 config.json · known_hosts</text>
+    <g class="ve-n opt"><rect class="sh" x="330" y="210" width="150" height="52"/><text x="405" y="228">ssh master</text><text class="sub" x="405" y="248">可选 · 共享连接</text></g>
+    <g class="ve-n"><rect class="sh" x="590" y="191" width="170" height="90"/><text x="675" y="224">pi-env daemon</text><text class="sub" x="675" y="248">Rust · 帧协议 · 文件</text></g>
+    <g class="ve-n"><rect class="sh" x="800" y="62" width="130" height="44"/><text x="865" y="78">命令</text><text class="sub" x="865" y="96">exec 运行</text></g>
+    <g class="ve-n"><rect class="sh" x="800" y="122" width="130" height="44"/><text x="865" y="138">终端</text><text class="sub" x="865" y="156">pty 保持</text></g>
+    <g class="ve-n"><rect class="sh" x="800" y="182" width="130" height="44"/><text x="865" y="198">MCP 服务</text><text class="sub" x="865" y="216">process 管道</text></g>
+    <g class="ve-n opt"><rect class="sh" x="800" y="290" width="130" height="44"/><text x="865" y="306">后台作业</text><text class="sub" x="865" y="324">setsid 脱离</text></g>
+
+    <g class="ve-co" transform="translate(285 200)"><circle r="11"/><text>1</text></g>
+    <g class="ve-co" transform="translate(760 191)"><circle r="11"/><text>2</text></g>
+    <g class="ve-co" transform="translate(800 290)"><circle r="11"/><text>3</text></g>
+  </svg></div>
+  <figcaption><span class="fig-n">Fig. 1</span>所有工具调用都走 serve 到 daemon 的那一条 ssh 会话；远端只运行 daemon 和它的子进程。</figcaption>
+  <ul class="co-notes">
+    <li><b>①</b>serve 对每台主机持有一条连接，断线后在下次调用时重连。</li>
+    <li><b>②</b>daemon 随连接存亡；连接结束时，它杀掉自己启动的命令、终端和 MCP 服务。</li>
+    <li><b>③</b>后台作业用 setsid 脱离 daemon，断线和 serve 重启后都继续运行。</li>
+  </ul>
+</figure>
+
+<div class="kpis">
+  <div class="kpi"><span class="ve-label">每个 agent 占 Miyabi 会话</span><span class="val"><span data-count="1">1</span><span class="unit">个</span></span>
+    <ve-bars unit="个" max="2" label="旧方式每个 agent 占 2 个会话，经 serve 占 1 个"><ve-bar value="2">旧:ssh注册</ve-bar><ve-bar value="1" hot>经serve</ve-bar></ve-bars></div>
+  <div class="kpi"><span class="ve-label">连上之后每条命令</span><span class="val">≈<span data-count="6">6</span><span class="unit">ms</span></span>
+    <ve-bars unit="s" max="2.4" label="pi-env 建连 2.4 秒，ssh 直连 0.6 秒，连上后每条命令 0.006 秒"><ve-bar value="2.4">pi-env建连</ve-bar><ve-bar value="0.6">ssh直连</ve-bar><ve-bar value="0.006" hot>每条命令</ve-bar></ve-bars></div>
+  <div class="kpi"><span class="ve-label">agent 看到的工具</span><span class="val"><span data-count="31">31</span><span class="unit">个</span></span>
+    <ve-bars unit="个" max="16" label="15 个自有工具，16 个来自远端 miyabi-mcp"><ve-bar value="15">自有工具</ve-bar><ve-bar value="16" hot>远端MCP</ve-bar></ve-bars></div>
+</div>
+
+<section id="conn">
+  <p class="ve-label caps">连接</p>
+  <h2>建连付一次 2.4 秒，之后每条命令约 6 毫秒</h2>
+  <figure class="ve-steps">
+    <div class="frame"><svg class="ve-svg" viewBox="0 0 900 430" aria-label="建连时序：三次 ssh 之后，第三次 ssh 保持为长期会话，承载 hello 和此后所有请求">
+      <path class="ve-axis" d="M200 62V420M700 62V420"/>
+      <rect class="act" data-s="3" x="694" y="230" width="12" height="190"/>
+
+      <g data-s="1">
+        <path class="ve-e" d="M200 90H700"/><text class="ve-el" x="450" y="81">ssh ①  uname -s / -m · $HOME</text>
+        <path class="ve-e is-async" d="M700 118H200"/><text class="ve-el" x="450" y="109">linux aarch64 · /home/x10041</text>
+      </g>
+      <g data-s="2">
+        <path class="ve-e" d="M200 160H700"/><text class="ve-el" x="450" y="151">ssh ②  sha256 校验 pi-env-&lt;hash&gt;</text>
+        <path class="ve-e is-async" d="M700 188H200"/><text class="ve-el" x="450" y="179">一致（不一致时上传再改名）</text>
+      </g>
+      <g data-s="3">
+        <path class="ve-e is-hot" d="M200 230H700"/><text class="ve-el" x="450" y="221">ssh ③  $SHELL -lc daemon serve --token</text>
+        <path class="ve-e is-async" d="M700 258H200"/><text class="ve-el" x="450" y="249">PI-ENV &lt;token&gt;</text>
+      </g>
+      <g data-s="4">
+        <path class="ve-e" d="M200 300H700"/><text class="ve-el" x="450" y="291">hello · protocol 1</text>
+        <path class="ve-e is-async" d="M700 328H200"/><text class="ve-el" x="450" y="319">features: listFiles, process</text>
+      </g>
+      <g data-s="5">
+        <path class="ve-e" d="M200 370H700"/><text class="ve-el" x="450" y="361">请求帧：exec · readFile · process …</text>
+        <path class="ve-e is-async" d="M700 398H200"/><text class="ve-el" x="450" y="389">响应帧 · 每 5 s 双向 ping</text>
+        <text class="ve-tag key" x="712" y="384">≈6 ms / 条</text>
+      </g>
+
+      <g class="ve-dim is-key" data-s="4"><path class="ext" d="M200 90H112M200 328H112"/><path class="ln" d="M120 90V328M116 94l8-8M116 332l8-8"/><text x="76" y="209">2.4 s</text></g>
+
+      <g class="ve-n"><rect class="sh" x="110" y="22" width="180" height="40"/><text x="200" y="42">pi-env-mcp（本机）</text></g>
+      <g class="ve-n"><rect class="sh" x="590" y="22" width="220" height="40"/><text x="700" y="42">远端 sshd → daemon</text></g>
+    </svg></div>
+    <div class="ve-player">
+      <ol class="ve-cap">
+        <li data-n="1/5">第 1 次 ssh 问出系统和架构，挑出对应的 daemon 二进制。</li>
+        <li data-n="2/5">第 2 次 ssh 用 sha256 校验远端的 daemon；缺失或不一致才上传。</li>
+        <li data-n="3/5">第 3 次 ssh 经 login shell 启动 daemon；这条 ssh 一直保持，就是那 1 个会话。</li>
+        <li data-n="4/5">hello 交换协议版本和功能；到这里约 2.4 秒（Miyabi，经 ssh master）。</li>
+        <li data-n="5/5">之后每个工具调用只是这条连接上的一个请求帧，约 6 毫秒。</li>
+      </ol>
+      <button data-go="-1" aria-label="上一步">‹</button><button data-play aria-label="播放">▶</button><input type="range" aria-label="步骤"><button data-go="1" aria-label="下一步">›</button>
+    </div>
+    <figcaption><span class="fig-n">Fig. 2</span>三次 ssh 只在建连时发生；agent 启动后连接一直保持，断线或 <code>hosts reconnect</code> 时才重来。</figcaption>
+  </figure>
+  <p>建连的三次 ssh 来自上游 pi-env 的 <code>connectSsh</code>，pi-env-mcp 不改它。login shell 只在启动 daemon 时读一次 profile；此后命令继承 daemon 的环境。daemon 30 秒收不到数据就退出，并杀掉它启动的进程组。</p>
+</section>
+
+<section id="state">
+  <p class="ve-label caps">状态</p>
+  <h2>后台作业不怕断线；其余状态随连接或 serve 消失</h2>
+  <figure>
+    <div class="ve-table"><table>
+      <thead><tr><th>状态</th><th>存放在</th><th>连接断开</th><th>serve 重启</th></tr></thead>
+      <tbody>
+        <tr><td>bash 的工作目录（<code>cd</code> 延续）</td><td>serve</td><td><span class="chip ok">保留</span></td><td><span class="chip risk">丢失</span> <small>回到配置的 cwd</small></td></tr>
+        <tr><td>终端：shell 变量、virtualenv、REPL</td><td>daemon</td><td><span class="chip risk">丢失</span></td><td><span class="chip risk">丢失</span></td></tr>
+        <tr><td>前台命令</td><td>daemon</td><td><span class="chip risk">丢失</span> <small>报告为 lost</small></td><td><span class="chip risk">丢失</span></td></tr>
+        <tr><td>远端 MCP 服务</td><td>daemon</td><td><span class="chip warn">重启</span> <small>下次调用时</small></td><td><span class="chip warn">重启</span> <small>随 serve 启动</small></td></tr>
+        <tr><td>后台作业（<code>run_in_background</code>）</td><td>远端主机</td><td><span class="chip ok">保留</span></td><td><span class="chip ok">保留</span></td></tr>
+      </tbody>
+    </table></div>
+    <figcaption><span class="fig-n">Fig. 3</span>只有后台作业的记录写在远端磁盘上（<code>~/.local/state/pi-env-mcp/jobs/&lt;hostname&gt;/</code>），所以它能跨过断线和重启。</figcaption>
+  </figure>
+</section>
+
+<section id="mcp">
+  <p class="ve-label caps">远端 MCP</p>
+  <h2>远端 MCP 服务跑在同一条连接里，工具和 bash 并列</h2>
+  <figure>
+    <ve-flow label="agent 的 tools/call 经 serve 路由到 pi-mcp 客户端，经 daemon 的 process 管道写进远端服务的 stdin">
+      <ve-node id="agent" at="1 1" sub="tools/call">Agent</ve-node>
+      <ve-node id="serve" at="2 1" sub="按名字路由" key>serve</ve-node>
+      <ve-node id="client" at="3 1" sub="pi-mcp">McpClient</ve-node>
+      <ve-node id="daemon" at="4 1" sub="process 操作">daemon</ve-node>
+      <ve-node id="srv" at="5 1" sub="stdio">miyabi-mcp</ve-node>
+      <ve-edge from="agent" to="serve" label="pbs__wait"/>
+      <ve-edge from="serve" to="client" label="job_wait" hot/>
+      <ve-edge from="client" to="daemon" label="processWrite" hot/>
+      <ve-edge from="daemon" to="srv" label="stdin" hot/>
+    </ve-flow>
+    <figcaption><span class="fig-n">Fig. 4</span>serve 拦下 tools/list 和 tools/call：列表里合并远端工具，调用按名字转给对应服务；结果、progress 和取消原路返回。</figcaption>
+  </figure>
+
+  <figure>
+    <div class="frame"><svg class="ve-svg" viewBox="0 0 900 210" aria-label="Claude Code 里的工具名 mcp__miyabi-g__miyabi_pbs__job_submit 分为四段">
+      <text class="name-seg" x="60" y="70" textLength="80" lengthAdjust="spacingAndGlyphs">mcp__</text>
+      <text class="name-seg" x="140" y="70" textLength="128" lengthAdjust="spacingAndGlyphs">miyabi-g</text>
+      <text class="name-seg" x="268" y="70" textLength="32" lengthAdjust="spacingAndGlyphs">__</text>
+      <text class="name-seg key" x="300" y="70" textLength="160" lengthAdjust="spacingAndGlyphs">miyabi_pbs</text>
+      <text class="name-seg" x="460" y="70" textLength="32" lengthAdjust="spacingAndGlyphs">__</text>
+      <text class="name-seg" x="492" y="70" textLength="160" lengthAdjust="spacingAndGlyphs">job_submit</text>
+
+      <path class="brk" d="M62 96V104H138V96"/>
+      <path class="brk" d="M142 96V104H266V96"/>
+      <path class="brk key" d="M302 96V104H458V96"/>
+      <path class="brk" d="M494 96V104H650V96"/>
+      <path class="ann" d="M100 104V130"/><text class="ve-tag" x="60" y="146">agent 加的前缀</text>
+      <path class="ann" d="M204 104V160"/><text class="ve-tag" x="160" y="176">agent 里的注册名</text>
+      <path class="ann" d="M380 104V130"/><text class="ve-tag key" x="330" y="146">服务名 miyabi-pbs → miyabi_pbs</text>
+      <path class="ann" d="M572 104V160"/><text class="ve-tag" x="530" y="176">远端服务自己的工具名</text>
+    </svg></div>
+    <figcaption><span class="fig-n">Fig. 5</span>pi-env-mcp 只加中间一段：用 pi 的 <code>createMcpToolName</code> 生成，去掉 pi 自己的 <code>mcp__</code>，因为 agent 会再加一次。</figcaption>
+  </figure>
+  <p>非字母数字下划线的字符变成 <code>_</code>；过长或冲突的名字加哈希后缀。描述、输入输出 schema 和 annotations 都保持服务原样。</p>
+
+  <figure>
+    <div class="frame"><svg class="ve-svg" viewBox="0 0 900 310" aria-label="6aab119 之前，agent 不要 progress 的长调用在 60 秒被取消；之后 serve 总要 progress，每 10 秒一条，90 秒的调用正常完成">
+      <path class="ve-axis" d="M180 278H830M180 272V284M390 272V284M600 272V284M810 272V284"/>
+      <text class="ve-axis-t" x="180" y="298">0 s</text><text class="ve-axis-t" x="390" y="298">30 s</text><text class="ve-axis-t" x="600" y="298">60 s</text><text class="ve-axis-t" x="810" y="298">90 s</text>
+
+      <text class="ve-tag" x="20" y="74">6aab119 之前</text>
+      <text class="ve-tag" x="20" y="94">agent 不要 progress</text>
+      <path class="ve-e" d="M180 84H596"/>
+      <text class="ve-el" x="390" y="75">job_wait · 服务器不发 progress</text>
+      <text class="ve-x" x="604" y="84">✕</text>
+      <text class="ve-tag risk" x="622" y="88">超时，服务器收到 cancelled</text>
+      <g class="ve-dim is-key"><path class="ext" d="M180 92V122M600 92V122"/><path class="ln" d="M180 116H600M176 120l8-8M596 120l8-8"/><text x="390" y="110">60 s</text></g>
+
+      <text class="ve-tag" x="20" y="184">6aab119 之后</text>
+      <text class="ve-tag" x="20" y="204">serve 总要 progress</text>
+      <path class="ve-e is-hot" d="M180 194H806"/>
+      <text class="ve-el" x="460" y="172">每条 progress 让 60 s 计时重新开始</text>
+      <circle class="tick" cx="250" cy="194" r="4"/><circle class="tick" cx="320" cy="194" r="4"/><circle class="tick" cx="390" cy="194" r="4"/><circle class="tick" cx="460" cy="194" r="4"/><circle class="tick" cx="530" cy="194" r="4"/><circle class="tick" cx="600" cy="194" r="4"/><circle class="tick" cx="670" cy="194" r="4"/><circle class="tick" cx="740" cy="194" r="4"/>
+      <text class="ve-tag key" x="716" y="230">90.1 s 返回</text>
+      <g class="ve-dim"><path class="ext" d="M600 200V232M670 200V232M670 200V232"/><path class="ln" d="M600 226H670M596 230l8-8M666 230l8-8"/><text x="635" y="220">10 s</text></g>
+    </svg></div>
+    <figcaption><span class="fig-n">Fig. 6</span>serve 每次调用都向远端服务要 progress，和上游 pi 一致；只有 agent 自己要了才往上转发。数据来自 miyabi-toolbox-ec 用假 PBS 的测试。</figcaption>
+  </figure>
+
+  <figure class="ve-steps">
+    <ve-flow label="远端 MCP 服务的五个状态及其转换">
+      <ve-region id="life" label="一个远端 MCP 服务">
+        <ve-node id="closed" at="1 1">closed</ve-node>
+        <ve-node id="connecting" at="3 1">connecting</ve-node>
+        <ve-node id="connected" at="5 1" key>connected</ve-node>
+        <ve-node id="failed" at="3 2">failed</ve-node>
+        <ve-node id="disconnected" at="5 2">disconnected</ve-node>
+      </ve-region>
+      <script type="text/plain" model>
+        init = { state: "connecting", shut: false }
+        events = {
+          "初始化成功": { when: s => s.state === "connecting" && !s.shut, then: s => ({ ...s, state: "connected" }), at: "src/mcp.ts:214" },
+          "启动失败": { when: s => s.state === "connecting" && !s.shut, then: s => ({ ...s, state: "failed" }), at: "src/mcp.ts:223" },
+          "退出或断线": { when: s => s.state === "connected" && !s.shut, then: s => ({ ...s, state: "disconnected" }), at: "src/mcp.ts:251" },
+          "下次调用": { when: s => (s.state === "disconnected" || s.state === "failed") && !s.shut, then: s => ({ ...s, state: "connecting" }), at: "src/mcp.ts:142" },
+          "agent exit": { when: s => !s.shut, then: s => ({ state: "closed", shut: true }), at: "src/mcp.ts:156" },
+        }
+        rules = { "关闭后不再启动": { holds: s => !(s.shut && s.state !== "closed"), fails: { state: "connecting", shut: true } } }
+        state = s => ({ life: s.state })
+      </script>
+    </ve-flow>
+    <figcaption><span class="fig-n">Fig. 7</span>断开或失败的服务在下次调用时重新启动；agent 退出后，没有任何事件能再启动它（agent exit：agent 退出，serve 关闭全部服务）。<code>hosts</code> 的 reconnect 走“退出或断线”再“下次调用”这条路。</figcaption>
+  </figure>
+  <p>serve 启动时最多等 8 秒（<code>--mcp-wait</code>），让远端工具出现在第一次列表里；更慢的服务之后通过 <code>tools/list_changed</code> 出现。服务退出时，daemon 杀掉它的整个进程组；要留下的子进程必须自己 <code>setsid</code>。</p>
+</section>
+
+<section id="sessions">
+  <p class="ve-label caps">会话</p>
+  <h2>每个 agent 只占 1 个会话；Miyabi 一条 master 最多 10 个</h2>
+  <figure>
+    <div class="cases">
+      <div class="case" data-st="warn"><span class="chip warn">7 / 10</span><h3>旧：agent 另开 ssh 跑 miyabi-mcp</h3>
+        <svg class="ve-mini" viewBox="0 0 240 128" aria-label="3 个 agent 各占 2 个会话，加 notifyd 1 个，共 7 个">
+          <rect class="ve-slot is-on" x="12" y="20" width="38" height="34"/><text class="slot-t" x="31" y="37">A</text>
+          <rect class="ve-slot is-on slot-x" x="57" y="20" width="38" height="34"/><text class="slot-t" x="76" y="37">A′</text>
+          <rect class="ve-slot is-on" x="102" y="20" width="38" height="34"/><text class="slot-t" x="121" y="37">B</text>
+          <rect class="ve-slot is-on slot-x" x="147" y="20" width="38" height="34"/><text class="slot-t" x="166" y="37">B′</text>
+          <rect class="ve-slot is-on" x="192" y="20" width="38" height="34"/><text class="slot-t" x="211" y="37">C</text>
+          <rect class="ve-slot is-on slot-x" x="12" y="62" width="38" height="34"/><text class="slot-t" x="31" y="79">C′</text>
+          <rect class="ve-slot is-on" x="57" y="62" width="38" height="34"/><text class="slot-t" x="76" y="79">n</text>
+          <rect class="ve-slot" x="102" y="62" width="38" height="34"/>
+          <rect class="ve-slot" x="147" y="62" width="38" height="34"/>
+          <rect class="ve-slot" x="192" y="62" width="38" height="34"/>
+          <text class="ve-tag" x="12" y="118">′ = 直连 miyabi-mcp 的 ssh</text>
+        </svg></div>
+      <div class="case" data-st="ok"><span class="chip ok">4 / 10</span><h3>新：miyabi-mcp 走 serve 的连接</h3>
+        <svg class="ve-mini" viewBox="0 0 240 128" aria-label="3 个 agent 各占 1 个会话，加 notifyd 1 个，共 4 个">
+          <rect class="ve-slot is-on" x="12" y="20" width="38" height="34"/><text class="slot-t" x="31" y="37">A</text>
+          <rect class="ve-slot is-on" x="57" y="20" width="38" height="34"/><text class="slot-t" x="76" y="37">B</text>
+          <rect class="ve-slot is-on" x="102" y="20" width="38" height="34"/><text class="slot-t" x="121" y="37">C</text>
+          <rect class="ve-slot is-on" x="147" y="20" width="38" height="34"/><text class="slot-t" x="166" y="37">n</text>
+          <rect class="ve-slot" x="192" y="20" width="38" height="34"/>
+          <rect class="ve-slot" x="12" y="62" width="38" height="34"/>
+          <rect class="ve-slot" x="57" y="62" width="38" height="34"/>
+          <rect class="ve-slot" x="102" y="62" width="38" height="34"/>
+          <rect class="ve-slot" x="147" y="62" width="38" height="34"/>
+          <rect class="ve-slot" x="192" y="62" width="38" height="34"/>
+          <text class="ve-tag" x="12" y="118">n = notifyd 的一次轮询</text>
+        </svg></div>
+      <div class="case" data-st="risk"><span class="chip risk">10 / 10</span><h3>满了：第 11 个会话被拒</h3>
+        <svg class="ve-mini" viewBox="0 0 240 128" aria-label="10 个会话都占满时，第 11 个被 sshd 拒绝">
+          <rect class="ve-slot is-on" x="12" y="20" width="38" height="34"/><rect class="ve-slot is-on" x="57" y="20" width="38" height="34"/><rect class="ve-slot is-on" x="102" y="20" width="38" height="34"/><rect class="ve-slot is-on" x="147" y="20" width="38" height="34"/><rect class="ve-slot is-on" x="192" y="20" width="38" height="34"/>
+          <rect class="ve-slot is-on" x="12" y="62" width="38" height="34"/><rect class="ve-slot is-on" x="57" y="62" width="38" height="34"/><rect class="ve-slot is-on" x="102" y="62" width="38" height="34"/><rect class="ve-slot is-on" x="147" y="62" width="38" height="34"/><rect class="ve-slot is-on" x="192" y="62" width="38" height="34"/>
+          <text class="ve-x" x="20" y="116">✕</text><text class="ve-tag risk" x="36" y="120">Session open refused</text>
+        </svg></div>
+    </div>
+    <figcaption><span class="fig-n">Fig. 8</span>同样 3 个 agent 加一次 notifyd 轮询：旧方式占 7 个会话，新方式占 4 个；满 10 个时，提示是“没有空闲会话”，不再误报“master 已关闭”（8ba80d0）。</figcaption>
+  </figure>
+  <p>一个 serve 在一台主机上只占 1 个会话，不管它跑多少命令、终端和 MCP 服务。会话上限来自 sshd 的 <code>MaxSessions</code>，按每条 master 连接计。</p>
+</section>
+
+<section id="trust">
+  <p class="ve-label caps">信任</p>
+  <h2>三道检查：主机密钥、免交互登录、daemon 哈希</h2>
+  <figure>
+    <ve-flow label="连接要依次通过主机密钥检查、BatchMode 登录和 daemon 的 sha256 校验；密钥未信任或变更时拒绝连接">
+      <ve-node id="cli" at="1 1" sub="ssh">pi-env-mcp</ve-node>
+      <ve-node id="key" at="2 1" sub="自有 known_hosts">主机密钥</ve-node>
+      <ve-node id="login" at="3 1" sub="BatchMode">登录</ve-node>
+      <ve-node id="bin" at="4 1" sub="sha256 一致" key>daemon</ve-node>
+      <ve-node id="stop" at="2 2" sub="提示 trust">拒绝连接</ve-node>
+      <ve-edge from="cli" to="key" label="连接"/>
+      <ve-edge from="key" to="login" label="密钥一致" hot/>
+      <ve-edge from="login" to="bin" label="登录成功" hot/>
+      <ve-edge from="key" to="stop" label="未信任/变更"/>
+    </ve-flow>
+    <figcaption><span class="fig-n">Fig. 9</span>主机密钥只认 <code>trust</code> 写进自有 known_hosts 的那把；变更的密钥从不自动接受。</figcaption>
+  </figure>
+  <ul>
+    <li><code>trust</code> 扫描主机出示的密钥，与你的 <code>~/.ssh/known_hosts</code> 比对：一致就接受，没有记录就要你确认指纹，不一致就拒绝，除非加 <code>--yes</code>。</li>
+    <li>ssh 用 <code>BatchMode</code>，不弹密码提示；关闭 agent、X11 和端口转发。需要一次性密码的主机用 <code>shareConnection</code>，借你自己开的 master。</li>
+    <li>daemon 每次启动前都校验 sha256；远端不需要 root，不开端口，不常驻服务。</li>
+  </ul>
+</section>
+
+<section id="code">
+  <p class="ve-label caps">代码</p>
+  <h2>server 管工具，session 管连接，mcp 管远端服务</h2>
+  <figure>
+    <div class="ve-table"><table>
+      <thead><tr><th>模块</th><th class="num">行数</th><th>职责</th></tr></thead>
+      <tbody>
+        <tr><td class="mod">server.ts</td><td class="num"><div class="lines"><i style="width:100px"></i><span>892</span></div></td><td>MCP 服务端：15 个自有工具、远端工具的合并与路由、<code>hosts</code> 报告</td></tr>
+        <tr><td class="mod">lib/</td><td class="num"><div class="lines"><i style="width:58px"></i><span>518</span></div></td><td>字符串替换、终端按键、无界面终端屏幕、文本清理</td></tr>
+        <tr><td class="mod">session.ts</td><td class="num"><div class="lines"><i style="width:54px"></i><span>485</span></div></td><td>HostManager：每台主机一条连接、shareConnection 包装、连接错误提示</td></tr>
+        <tr><td class="mod">cli.ts</td><td class="num"><div class="lines"><i style="width:53px"></i><span>474</span></div></td><td>子命令：serve、add / trust / check / list / remove、mcp add / remove / list</td></tr>
+        <tr><td class="mod">mcp.ts</td><td class="num"><div class="lines"><i style="width:41px"></i><span>362</span></div></td><td>远端 MCP 服务：启动参数、pi-mcp 客户端、状态、工具改名</td></tr>
+        <tr><td class="mod">transfer.ts</td><td class="num"><div class="lines"><i style="width:38px"></i><span>338</span></div></td><td>upload / download：完成后才出现，流水线读写</td></tr>
+        <tr><td class="mod">terminals.ts</td><td class="num"><div class="lines"><i style="width:37px"></i><span>326</span></div></td><td>pty 终端，经 xterm headless 读成屏幕文字</td></tr>
+        <tr><td class="mod">jobs.ts</td><td class="num"><div class="lines"><i style="width:32px"></i><span>285</span></div></td><td>后台作业：setsid、远端状态目录、信号</td></tr>
+        <tr><td class="mod">config.ts</td><td class="num"><div class="lines"><i style="width:30px"></i><span>269</span></div></td><td>配置解析；<code>mcpServers</code> 用 pi 的校验器检查</td></tr>
+        <tr><td class="mod">search.ts</td><td class="num"><div class="lines"><i style="width:19px"></i><span>169</span></div></td><td>glob（daemon 的 listFiles）与 grep（ripgrep）</td></tr>
+        <tr><td class="mod">files.ts</td><td class="num"><div class="lines"><i style="width:18px"></i><span>164</span></div></td><td>read / write / edit</td></tr>
+        <tr><td class="mod">shell.ts</td><td class="num"><div class="lines"><i style="width:18px"></i><span>162</span></div></td><td>bash：工作目录跟踪、输出截断与节流</td></tr>
+        <tr><td class="mod">trust.ts</td><td class="num"><div class="lines"><i style="width:15px"></i><span>133</span></div></td><td>主机密钥扫描、比对与信任；读取 <code>ssh -G</code></td></tr>
+      </tbody>
+    </table></div>
+    <figcaption><span class="fig-n">Fig. 10</span>4,061 行 TypeScript；连接、文件、命令和 MCP 协议都交给上游 pi 的包，这里只做组合和适配。</figcaption>
+  </figure>
+
+  <figure>
+    <ve-flow label="上游 pi 的 main 经 vendor-pi.sh 编译打包成 vendor 里的 tarball，再由 npm install 安装">
+      <ve-node id="pi" at="1 1" sub="main @8a19e8c4a">../pi</ve-node>
+      <ve-node id="sh" at="2 1" sub="cargo · tsc">vendor-pi.sh</ve-node>
+      <ve-node id="tgz" at="3 1" sub="pi-env · pi-mcp" key>vendor/*.tgz</ve-node>
+      <ve-node id="nm" at="4 1" sub="node_modules">npm install</ve-node>
+      <ve-edge from="pi" to="sh" label="读取源码"/>
+      <ve-edge from="sh" to="tgz" label="npm pack" hot/>
+      <ve-edge from="tgz" to="nm" label="安装"/>
+    </ve-flow>
+    <figcaption><span class="fig-n">Fig. 11</span><code>process</code> 操作和 <code>PipeTransport</code> 还没进 npm 发布版，所以 pi-env 和 pi-mcp 从上游 main 构建；daemon 只有 Linux x86-64 和 arm64。</figcaption>
+  </figure>
+  <p>原则：完全复用 pi 系列的最新做法，不保留兜底；子命令和退出码与上游一致，只为 Claude Code 和 Codex 做适配。pi 发布这些功能后，依赖回到 npm，<code>vendor/</code> 删除。</p>
+</section>
+
+<section id="limits">
+  <p class="ve-label caps">边界</p>
+  <h2>notifyd 和账本导出这一版仍走 ssh</h2>
+  <figure>
+    <div class="cases">
+      <div class="case" data-st="ok"><span class="chip ok">现在</span><h3>直接 ssh，经 master</h3>
+        <svg class="ve-mini" viewBox="0 0 240 128" aria-label="notifyd 每次直接 ssh，约 0.6 秒">
+          <path class="ve-e" d="M88 64H150"/><text class="ve-el" x="119" y="30">0.6 s</text>
+          <g class="ve-n"><rect class="sh" x="8" y="44" width="80" height="40"/><text x="48" y="64">notifyd</text></g>
+          <g class="ve-n"><rect class="sh" x="150" y="44" width="82" height="40"/><text x="191" y="64">Miyabi</text></g>
+        </svg></div>
+      <div class="case" data-st="warn"><span class="chip warn">方案 A</span><h3>一次性 run 子命令</h3>
+        <svg class="ve-mini" viewBox="0 0 240 128" aria-label="每次调用都重新建连，约 2.4 秒，不省会话">
+          <path class="ve-e is-st" d="M88 64H150"/><text class="ve-el" x="119" y="30">每次 2.4 s</text>
+          <g class="ve-n"><rect class="sh" x="8" y="44" width="80" height="40"/><text x="48" y="64">notifyd</text></g>
+          <g class="ve-n"><rect class="sh" x="150" y="44" width="82" height="40"/><text x="191" y="64">Miyabi</text></g>
+          <text class="ve-tag" x="8" y="112">上游没有，改动小</text>
+        </svg></div>
+      <div class="case" data-st="warn"><span class="chip warn">方案 B</span><h3>本地常驻进程持有连接</h3>
+        <svg class="ve-mini" viewBox="0 0 240 128" aria-label="notifyd 和 serve 共用一个常驻进程的连接，只占 1 个会话">
+          <path class="ve-e" d="M78 34H100V56"/><path class="ve-e" d="M78 94H100V72"/>
+          <path class="ve-e is-st" d="M162 64H180"/><text class="ve-el" x="200" y="40">1 会话</text>
+          <g class="ve-n"><rect class="sh" x="4" y="18" width="74" height="32"/><text x="41" y="34">notifyd</text></g>
+          <g class="ve-n"><rect class="sh" x="4" y="78" width="74" height="32"/><text x="41" y="94">serve</text></g>
+          <g class="ve-n"><rect class="sh" x="100" y="48" width="62" height="32"/><text x="131" y="64">常驻</text></g>
+          <g class="ve-n"><rect class="sh" x="180" y="48" width="56" height="32"/><text x="208" y="64">Miyabi</text></g>
+        </svg></div>
+    </div>
+    <figcaption><span class="fig-n">Fig. 12</span>A 每次要重新建连，达不到 1–2 秒的启动要求；B 能共用一个会话，但改动大。2026-11-06 决定两者都暂不做。</figcaption>
+  </figure>
+  <ul>
+    <li>远端 MCP 服务的 resources、prompts，以及服务端发给客户端的请求（sampling、elicitation），都不转发。</li>
+    <li>只支持 stdio 服务；HTTP 服务不需要远端主机，直接注册给 agent。</li>
+    <li>现在的 vendor 构建只带 Linux daemon；macOS、Windows、Android 主机要另外构建。</li>
+  </ul>
+</section>
+
+<section class="sources" aria-label="Sources">
+  <p class="ve-label caps">Sources</p>
+  <p><code>README.md</code> · <code>src/server.ts</code> · <code>src/session.ts</code> · <code>src/mcp.ts:142,156,214,223,251</code> · <code>scripts/vendor-pi.sh</code> · <code>vendor/README.md</code> · 上游 <code>../pi/packages/env/docs/protocol.md</code>、<code>packages/mcp/src/client.ts</code>、<code>packages/coding-agent/src/extensions/mcp/tools.ts</code></p>
+  <p>实测：<code>pi-env-mcp check miyabi-g</code> 三次 2.3–2.5 s，<code>ssh -T miyabi-g true</code> 0.6 s（2026-11-06）；进度与取消数据来自 miyabi-toolbox-ec 会话的假 PBS 测试；A′/B′ 重测来自 smooth-research-db 会话。提交：476e15d、8ba80d0、6aab119。</p>
+</section>
+</main>
+</body>
+</html>
